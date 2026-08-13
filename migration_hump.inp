@@ -1,0 +1,312 @@
+###############################################################################
+#  THE MIGRATION HUMP PARADOX  - GRETL SCRIPT (PART 1 + PART 2)
+#  Henry Raphael & Ansarinasab Julian
+###############################################################################
+
+# ---------------------------------------------------------------------------
+# DATA
+# ---------------------------------------------------------------------------
+# Put migration_data.gdt in our working directory
+open migration_data.gdt
+
+# Explanatory variables
+series X1 = ODA          # net ODA, % of GNI (lagged 3 years)
+series X2 = GDP          # GDP per capita, PPP
+series X3 = Unemp        # youth unemployment (18-24)
+series X4 = Stab         # political stability index
+
+# Dependent variable 
+series Y1 = mig_rate     # (NetMig / Pop) * 1000
+series Y2 = Pop
+series Y3 = (Y1/Y2)*1000
+series Y  = sgn(Y3)*ln(abs(Y3))
+
+
+###############################################################################
+#  PART 1
+###############################################################################
+
+# ---------------------------------------------------------------------------
+# 1. DESCRIPTIVE STATISTICS
+# ---------------------------------------------------------------------------
+scalar meanY  = mean(Y)     
+scalar sdY    = sd(Y)        
+freq Y --normal              #displays a complete and visually organized summary of variable Y, with an integrated normality test
+
+scalar meanX1 = mean(X1)     
+scalar sdX1   = sd(X1)       
+corr Y X1                    # calculates and displays the correlation between variables Y and X1
+
+scalar meanX2 = mean(X2)    
+scalar sdX2   = sd(X2)       
+corr Y X2                    
+
+scalar meanX3 = mean(X3)     
+scalar sdX3   = sd(X3)      
+corr Y X3                    
+
+scalar meanX4 = mean(X4)     
+scalar sdX4   = sd(X4)      
+corr Y X4                    
+
+#These are 4 commands to create correlation graphs between Y and each explanatory variable (X1, X2, X3, X4)
+gnuplot Y X1 --output=display
+gnuplot Y X2 --fit=linear --output=display
+gnuplot Y X3 --fit=linear --output=display
+gnuplot Y X4 --fit=linear --output=display
+
+# Test of linear correlation, example on X1
+# H0: rho = 0 ; H1: rho <> 0 ; |Tobs| > T(118 ; 97,5%)
+scalar rho    = corr(Y, X1)
+scalar n      = $nobs  # number of observations
+scalar T_obs  = abs(rho) / sqrt((1 - rho^2) / (n - 2))
+scalar T_crit = critical(t, n - 2, 0.025)
+printf "\nCORRELATION TEST X1 : Tobs = %.5f  Tcrit = %.5f\n", T_obs, T_crit
+
+# ---------------------------------------------------------------------------
+# 2. OLS ESTIMATION
+# ---------------------------------------------------------------------------
+ols Y const X1 X2 X3 X4
+scalar SSR = $ess        # 7387,487
+scalar n       = $nobs      # 120
+scalar p       = $ncoeff - 1   # 4
+
+# Individual t-tests
+scalar t_X1 = $coeff[2] / $stderr[2]     
+scalar t_X2 = $coeff[3] / $stderr[3]     
+scalar t_X3 = $coeff[4] / $stderr[4]     
+scalar t_X4 = $coeff[5] / $stderr[5]     
+scalar t_crit = critical(t, $df, 0.025)  
+printf "\nt-TESTS : X1 = %.4f | X2 = %.4f | X3 = %.4f | X4 = %.4f | t* = %.4f\n", \
+        t_X1, t_X2, t_X3, t_X4, t_crit
+
+# ---------------------------------------------------------------------------
+# 3. GLOBAL SIGNIFICANCE TEST
+# ---------------------------------------------------------------------------
+scalar SST = (sd(Y)^2) * (n - 1)                      
+scalar SSE = SST - SSR                        
+scalar F_final = (SSE / p) / (SSR / (n - p - 1))   
+scalar F_crit  = critical(F, p, n - p - 1, 0.05)           
+printf "\n--- GLOBAL F TEST ---\n"
+printf "SST = %.3f | SSR = %.3f | SSE = %.3f\n", SST, SSR, SSE
+printf "F computed = %.6f | F critical = %.6f\n", F_final, F_crit
+
+# ---------------------------------------------------------------------------
+# 4. CHOW TEST  (testing whether the model is structurally stable across wealthy and developing countries)
+#    CORRECTION: the split uses the dummy D_Rich = (X2 > 11236.6)
+#    68 countries with D_Rich = 0 and 52 countries with D_Rich = 1
+# ---------------------------------------------------------------------------
+series D_Rich = (X2 > 11236.6)
+
+ols Y const X1 X2 X3 X4
+scalar ssr_p = $ess           
+scalar n     = $nobs
+scalar k     = 5              # number of parameters
+
+smpl D_Rich == 0 --restrict   # retains only the observations where D_Rich = 0 (the poor countries)
+ols Y const X1 X2 X3 X4
+scalar ssr_1 = $ess           
+smpl full					  # Restore the full sample of 120 observations
+
+smpl D_Rich == 1 --restrict   # retains only the observations where D_Rich = 1 (the rich countries)
+ols Y const X1 X2 X3 X4
+scalar ssr_2 = $ess          
+smpl full
+
+scalar F_chow = ((ssr_p - (ssr_1 + ssr_2)) / k) / ((ssr_1 + ssr_2) / (n - 2*k))
+scalar F_crit = critical(F, k, n - 2*k, 0.05)
+scalar p_chow = pvalue(F, k, n - 2*k, F_chow)
+printf "\n--- CHOW TEST ---\n"
+printf "SSR group 1 = %.3f | SSR group 2 = %.3f\n", ssr_1, ssr_2
+printf "F chow = %.4f | F* (5%%) = %.5f | p-value = %.4f\n", F_chow, F_crit, p_chow
+# F_chow = 0,6495 < F* = 2,2969  =>  we do NOT reject H0: the model is stable
+
+# ---------------------------------------------------------------------------
+# 5. TEST FOR INCLUSION OF VARIABLES (the additional contribution of ODA beyond what GDP explains)
+# ---------------------------------------------------------------------------
+ols Y const X1 X2            # unrestricted
+scalar ssr_nr = $ess         
+scalar n = $nobs
+scalar k = 2
+ols Y const X2               # restricted
+scalar ssr_r = $ess          
+
+scalar q      = 1
+scalar F_obs  = ((ssr_r - ssr_nr) / q) / (ssr_nr / (n - k - 1))   
+scalar F_crit = critical(F, q, n - k - 1, 0.05)                   
+scalar p_val  = pvalue(F, q, n - k - 1, F_obs)                    
+printf "\n--- TEST FOR INCLUSION OF X1 ---\n"
+printf "F obs = %.4f | F* = %.4f | p-value = %.4f\n", F_obs, F_crit, p_val
+
+# ---------------------------------------------------------------------------
+# 6. INTERACTION TEST QUOTED IN THE CONCLUSION (the interaction between aid and wealth)
+# ---------------------------------------------------------------------------
+series X1_D_Rich = X1 * D_Rich
+ols Y const X1 X2 D_Rich X1_D_Rich
+# coefficient of X1_D_Rich: p-value = 0,9756  =>  the effect of aid does not
+# differ between poor and rich countries (no "migration hump" detected here)
+
+
+###############################################################################
+#  PART 2
+#  (same file, same Y, nothing is redefined here)
+###############################################################################
+
+# ---------------------------------------------------------------------------
+# 1. SELECTION OF THE OPTIMAL MODEL
+#    Method 1 - all possible regressions, compare AIC and SC
+# ---------------------------------------------------------------------------
+smpl full
+ols Y const X1
+matrix c = {1, $aic, $bic}
+ols Y const X2
+matrix c = c | {2, $aic, $bic}
+ols Y const X3
+matrix c = c | {3, $aic, $bic}
+ols Y const X4
+matrix c = c | {4, $aic, $bic}
+ols Y const X1 X2
+matrix c = c | {5, $aic, $bic}
+ols Y const X1 X3
+matrix c = c | {6, $aic, $bic}
+ols Y const X1 X4
+matrix c = c | {7, $aic, $bic}
+ols Y const X2 X3
+matrix c = c | {8, $aic, $bic}
+ols Y const X2 X4
+matrix c = c | {9, $aic, $bic}
+ols Y const X3 X4
+matrix c = c | {10, $aic, $bic}
+ols Y const X1 X2 X3
+matrix c = c | {11, $aic, $bic}
+ols Y const X1 X2 X4
+matrix c = c | {12, $aic, $bic}
+ols Y const X1 X3 X4
+matrix c = c | {13, $aic, $bic}
+ols Y const X2 X3 X4
+matrix c = c | {14, $aic, $bic}
+ols Y const X1 X2 X3 X4
+matrix c = c | {15, $aic, $bic}
+colnames(c, "model AIC SC")   # Assigns the names "model", "AIC", "SC" to the 3 columns of matrix c
+print c
+# Models whose variables are ALL significant: 2 (X2), 5 (X1 X2)
+#  3 (X3) is only significant at the 10% level
+# Smallest SC  ->  model 5 : AIC = 842,13  SC = 850,50
+
+# Method 2 - backward elimination
+ols Y const X1 X2 X3 X4      # X4 has the highest p-value (0,8255) -> removed
+ols Y const X1 X2 X3         # X3 is not significant (0,2968)      -> removed
+ols Y const X1 X2            # all significant -> STOP
+# Same optimal model as with the all-possible-regressions approach
+
+# OPTIMAL MODEL
+ols Y const X1 X2  # model 5 (optimal)
+
+# ---------------------------------------------------------------------------
+# 2. AUTOCORRELATION OF THE ERRORS
+#    CORRECTION: sort by X1 FIRST, then we compute DW and Breusch-Godfrey Test
+# ---------------------------------------------------------------------------
+dataset sortby X1
+
+ols Y const X1 X2
+series e   = $uhat
+series e_1 = e(-1)
+gnuplot e e_1 --output=display   # creates a graph showing the relationship between current and lagged residuals
+
+# Durbin-Watson
+series diff2  = (e - e_1)^2
+scalar sumee1 = sum(diff2)
+scalar sume   = sum(e^2)
+scalar DW     = sumee1 / sume
+printf "\n--- DURBIN-WATSON ---\nDW = %.5f\n", DW
+# DW = 1,95405 ; k = 2, n = 120 : d1 = 1,63 ; d2 = 1,72 ; 4-d2 = 2,28
+# d2 < DW < 4-d2  =>  H0 accepted, no autocorrelation
+
+# Breusch-Godfrey, order 1
+ols e const X1 X2 e_1
+scalar n_obs  = $nobs
+scalar n1     = n_obs - 1
+scalar R2 = $rsq
+scalar LM  = n1 * R2
+scalar crit = critical(X, 1, 0.05)
+printf "\n--- BREUSCH-GODFREY ---\nLM = %.4f | Chi2(1) at 5%% = %.4f\n", LM, crit
+# LM = 0,0516 < 3,841  =>  no autocorrelation
+
+# ---------------------------------------------------------------------------
+# 3. HETEROSKEDASTICITY OF THE ERRORS
+# ---------------------------------------------------------------------------
+ols Y const X1 X2
+series e  = $uhat
+series e2 = e*e
+gnuplot e2 X1 --fit=linear --output=display  # creates a graph showing the relationship between squared residuals and X1, with a fitted regression line
+
+# Goldfeld-Quandt (data already sorted by X1)
+scalar n_GQ    = $nobs
+scalar c_obs   = floor(n_GQ/4)               # 30 central observations removed
+scalar N_group = floor((n_GQ - c_obs)/2)     # 45 observations per group
+
+smpl 1 N_group
+ols Y const X1 X2
+scalar ssr1 = $ess                           
+scalar df1  = $df
+smpl full
+
+scalar S2_start = N_group + c_obs + 1
+smpl S2_start n_GQ
+ols Y const X1 X2
+scalar ssr2 = $ess                          
+scalar df2  = $df
+smpl full
+
+scalar GQ       = (ssr2/df2)/(ssr1/df1)
+scalar GQ_crit  = critical(F, df2, df1, 0.05)
+scalar pval_GQ  = pvalue(F, df2, df1, GQ)
+printf "\n--- GOLDFELD-QUANDT ---\nGQ = %.4f | F* = %.4f | p-value = %.4f\n", GQ, GQ_crit, pval_GQ
+# GQ = 0,6223 < 1,6710  =>  H0 not rejected (no increasing variance with X1)
+
+# White test
+ols Y const X1 X2
+series e  = $uhat
+series e2 = e*e
+series X1_2  = X1 * X1
+series X2_2  = X2 * X2
+series X1X2  = X1 * X2
+ols e2 const X1 X2 X1_2 X2_2 X1X2
+scalar LM_white   = $nobs * $rsq
+scalar df_white   = $ncoeff - 1                     # 5 restrictions
+scalar crit_white = critical(X, df_white, 0.05)     
+scalar pval_white = pvalue(X, df_white, LM_white)
+printf "\n--- WHITE TEST ---\nR2 aux = %.6f | LM = %.4f | Chi2(5) = %.4f | p-value = %.4f\n", \
+        $rsq, LM_white, crit_white, pval_white
+# LM = 6,3417 < 11,0705 (p = 0,2744)  =>  homoskedasticity is NOT rejected
+
+# Same conclusion with the built-in test:
+ols Y const X1 X2
+modtest --white
+
+# ---------------------------------------------------------------------------
+# 4. CORRECTION OF HETEROSKEDASTICITY 
+#    Since H0 is not rejected, NO GLS/WLS correction is applied.
+#    Robustness check = White heteroskedasticity-robust standard errors.
+# 
+#    WHY WE CHECK FOR HETEROSKEDASTICITY (NOT AUTOCORRELATION)
+#
+# 	Our dataset is a cross-section: 120 countries at a single point in time.
+#
+# 	Observations have no time ordering, so autocorrelation is not a concern here.
+# 	Heteroskedasticity is the standard risk in cross-sectional data: countries
+# 	differ enormously in size and wealth, so error variances are unlikely to be
+# 	constant across all 120 observations.
+# 	
+#   Goldfeld-Quandt and White Test both fail to reject H0, so no GLS correction is
+# 	needed. We still re-estimate with robust standard errors as a final check.
+# ---------------------------------------------------------------------------
+ols Y const X1 X2 --robust
+# const  9,94684    (robust s.e. 1,49014)  t = 6,675   p < 0,0001
+# X1    -0,253472   (robust s.e. 0,106089) t = -2,389  p = 0,0185
+# X2    -0,000422887(robust s.e. 9,89e-05) t = -4,274  p < 0,0001
+# => both variables remain significant: the results are robust
+
+###############################################################################
+#  END OF SCRIPT
+###############################################################################
